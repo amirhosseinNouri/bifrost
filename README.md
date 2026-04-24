@@ -1,12 +1,25 @@
 # bifrost
-Standalone VPN CLI extracted from `superopn`.
+Standalone VPN CLI for OpenVPN/SSTP with configurable DNS and split routing.
 
 ## Requirements
 - macOS
 - Python 3.10+
-- `openvpn` and/or `sstpc` installed
+- Homebrew
 
-## Install
+## Clone
+```bash
+git clone git@github.com:amirhosseinNouri/bifrost.git
+cd bifrost
+```
+
+## One-command bootstrap (recommended)
+From the project root:
+```bash
+./bootstrap.sh
+```
+This installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
+
+## Install alternatives
 `pipx`:
 ```bash
 pipx install /absolute/path/to/bifrost
@@ -14,7 +27,6 @@ pipx install /absolute/path/to/bifrost
 
 `pip`:
 ```bash
-cd /absolute/path/to/bifrost
 python3 -m pip install .
 ```
 
@@ -25,7 +37,7 @@ mkdir -p ~/.bifrost/configs
 ```
 2. Copy sample config and edit DNS/paths only if needed:
 ```bash
-cp /absolute/path/to/bifrost/config.example.toml ~/.bifrost/config.toml
+cp ./config.example.toml ~/.bifrost/config.toml
 ```
 3. Add your VPN group(s):
 ```text
