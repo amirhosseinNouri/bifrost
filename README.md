@@ -1,6 +1,20 @@
 # bifrost
 Standalone VPN CLI for OpenVPN/SSTP with configurable DNS and split routing.
 
+## Features
+- OpenVPN and SSTP support in one CLI.
+- Automatic server probing and best-server selection.
+- Auto-reconnect loop with reliability-aware ranking.
+- Group-based config loading (`cred.json` + `*.ovpn`/`*.sstp`).
+- Configurable internal/external DNS profiles via `~/.bifrost/config.toml`.
+- DNS switching command: `bifrost dns --internal|--external`.
+- Direct-route list support (`direct.conf`) for domain/CIDR VPN bypass.
+- Blocklist support (`block.conf`) using blackhole routes.
+- Per-server traffic/session stats (`bifrost stats`, `--clear`).
+- Outgoing connection sampling to help curate blocking rules.
+- Full cleanup command to restore DNS/routes and stop VPN clients.
+- Config/state paths centralized under `~/.bifrost` with overrides.
+
 ## Requirements
 - macOS
 - Python 3.10+
