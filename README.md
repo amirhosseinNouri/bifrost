@@ -27,12 +27,7 @@ cd bifrost
 ```
 
 ## One-command bootstrap (recommended)
-Run directly from GitHub:
-```bash
-curl -fsSL https://raw.githubusercontent.com/amirhosseinNouri/bifrost/main/bootstrap.sh | bash
-```
-
-Or from a local clone:
+From the project root:
 ```bash
 ./bootstrap.sh
 ```
