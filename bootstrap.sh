@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FORCE=0
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirror-pypi.runflare.com/simple}"
+PIP_TIMEOUT="${PIP_TIMEOUT:-60}"
+PIP_RETRIES="${PIP_RETRIES:-10}"
 
 if [[ "${1:-}" == "--force" ]]; then
   FORCE=1
@@ -21,6 +24,13 @@ require_cmd() {
   fi
 }
 
+pip_install() {
+  python3 -m pip "$@" \
+    --index-url "$PIP_INDEX_URL" \
+    --timeout "$PIP_TIMEOUT" \
+    --retries "$PIP_RETRIES"
+}
+
 install_formula_if_missing() {
   local formula="$1"
   local cmd="$2"
@@ -35,8 +45,8 @@ install_formula_if_missing() {
 }
 
 install_python_reqs() {
-  log "Installing Python dependencies ..."
-  python3 -m pip install -r "$ROOT_DIR/requirements.txt"
+  log "Installing Python dependencies from: $PIP_INDEX_URL"
+  pip_install install -r "$ROOT_DIR/requirements.txt"
 }
 
 install_bifrost_editable() {
@@ -47,7 +57,7 @@ install_bifrost_editable() {
   fi
 
   log "Installing bifrost package ..."
-  python3 -m pip install -e "$ROOT_DIR"
+  pip_install install -e "$ROOT_DIR"
 }
 
 require_cmd brew "Homebrew is required. Install it first: https://brew.sh"
