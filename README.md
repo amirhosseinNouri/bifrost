@@ -27,10 +27,16 @@ cd bifrost
 ```
 
 ## One-command bootstrap (recommended)
-From the project root:
+Run directly from GitHub:
+```bash
+curl -fsSL https://raw.githubusercontent.com/amirhosseinNouri/bifrost/main/bootstrap.sh | bash
+```
+
+Or from a local clone:
 ```bash
 ./bootstrap.sh
 ```
+
 This installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
 
 ## Install alternatives
