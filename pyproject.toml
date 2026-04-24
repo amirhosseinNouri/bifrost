@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bifrost"
+version = "1.0.0"
+description = "Auto-reconnect VPN CLI for OpenVPN/SSTP with configurable DNS and split routing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[tool.setuptools.packages.find]
+include = ["bifrost*"]
+
+[project.scripts]
+bifrost = "bifrost.cli:main"

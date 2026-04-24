@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+*.pyc
+
+# Local runtime/state (contains sensitive data)
+.bifrost/
+**/cred.json
+
+# Optional local run artifacts
+bifrost.log
+connections.log
+stats.json

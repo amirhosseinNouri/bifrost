@@ -1,0 +1,25 @@
+# Copy to ~/.bifrost/config.toml and adjust if needed.
+
+# Default: ~/.bifrost/configs
+configs_dir = "~/.bifrost/configs"
+
+# Default: ~/.bifrost/direct.conf
+# direct_file = "~/.bifrost/direct.conf"
+
+# Default: ~/.bifrost/block.conf
+# block_file = "~/.bifrost/block.conf"
+
+# Default: ~/.bifrost/stats.json
+# stats_file = "~/.bifrost/stats.json"
+
+# Default: ~/.bifrost/bifrost.log
+# log_file = "~/.bifrost/bifrost.log"
+
+# Default: ~/.bifrost/connections.log
+# connections_file = "~/.bifrost/connections.log"
+
+# Used by: bifrost dns --internal, split-direct DNS routes
+internal_dns = ["78.157.42.100", "78.157.42.101"]
+
+# Used by: bifrost dns --external, OpenVPN/SSTP connect path
+external_dns = ["8.8.8.8", "1.1.1.1"]
