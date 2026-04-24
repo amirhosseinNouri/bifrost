@@ -33,6 +33,8 @@ From the project root:
 ```
 
 This installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
+If tools are already installed, bootstrap skips them automatically.
+Use `./bootstrap.sh --force` to reinstall bifrost package.
 
 ## Install alternatives
 `pipx`:
