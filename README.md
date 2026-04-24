@@ -13,7 +13,6 @@ Standalone VPN CLI for OpenVPN/SSTP with configurable DNS and split routing.
 - Per-server traffic/session stats (`bifrost stats`, `--clear`).
 - Outgoing connection sampling to help curate blocking rules.
 - Full cleanup command to restore DNS/routes and stop VPN clients.
-- Config/state paths centralized under `~/.bifrost` with overrides.
 
 ## Requirements
 - macOS
@@ -26,46 +25,52 @@ git clone git@github.com:amirhosseinNouri/bifrost.git
 cd bifrost
 ```
 
-## One-command bootstrap (recommended)
+## Bootstrap setup (recommended)
 From the project root:
 ```bash
 ./bootstrap.sh
 ```
 
-This installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
-If tools are already installed, bootstrap skips them automatically.
-Use `./bootstrap.sh --force` to reinstall bifrost package.
+Notes:
+- Installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
+- Uses mirror `https://mirror-pypi.runflare.com/simple` by default.
+- Override mirror: `PIP_INDEX_URL=<url> ./bootstrap.sh`
+- Skips already-installed tools automatically.
+- Reinstall package: `./bootstrap.sh --force`
 
-## Install alternatives
-`pipx`:
-```bash
-pipx install /absolute/path/to/bifrost
-```
+## Groups and config layout
+A **group** is a provider/account/profile folder under `~/.bifrost/configs`.
 
-`pip`:
-```bash
-python3 -m pip install .
-```
+Each group contains:
+- one `cred.json` (shared credentials for that group)
+- one or more VPN config files
 
-## Quick setup
-1. Create local config root:
-```bash
-mkdir -p ~/.bifrost/configs
-```
-2. Copy sample config and edit DNS/paths only if needed:
-```bash
-cp ./config.example.toml ~/.bifrost/config.toml
-```
-3. Add your VPN group(s):
+You can put **multiple configs in one group** (for example several servers/regions).
+Bifrost will probe/select among them when you run that group.
+
+Protocol mapping:
+- `*.ovpn` files are treated as **OpenVPN** configs.
+- `*.sstp` files are treated as **SSTP** configs.
+
+Example tree:
 ```text
-~/.bifrost/configs/<group>/cred.json
-~/.bifrost/configs/<group>/*.ovpn
-~/.bifrost/configs/<group>/*.sstp
-```
-4. Optional files:
-```text
-~/.bifrost/direct.conf
-~/.bifrost/block.conf
+~/.bifrost/
+├── config.toml
+├── direct.conf
+├── block.conf
+├── configs/
+│   ├── work/
+│   │   ├── cred.json
+│   │   ├── us1.ovpn
+│   │   ├── us2.ovpn
+│   │   └── eu1.sstp
+│   └── personal/
+│       ├── cred.json
+│       ├── fast1.ovpn
+│       └── backup1.sstp
+├── connections.log
+├── stats.json
+└── bifrost.log
 ```
 
 `cred.json` example:
@@ -78,12 +83,19 @@ cp ./config.example.toml ~/.bifrost/config.toml
 ```
 
 ## Usage
+OpenVPN/SSTP group commands:
 ```bash
-sudo bifrost probe --group <group>
-sudo bifrost run --group <group>
+sudo bifrost probe --group work
+sudo bifrost run --group work
+```
+
+Other commands:
+```bash
+sudo bifrost stats
 sudo bifrost dns --internal
 sudo bifrost dns --external
 sudo bifrost cleanup
 ```
 
+If you have only one group, `--group` can be omitted.
 `--config-dir` overrides `configs_dir` from `~/.bifrost/config.toml`.
