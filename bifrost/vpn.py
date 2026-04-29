@@ -4,6 +4,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import json
+import shutil
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -16,15 +18,18 @@ from bifrost.config import (
     OPENVPN_BIN,
     PROTO_OPENVPN,
     PROTO_SSTP,
+    PROTO_V2RAY,
     RECONNECT_DELAY_INITIAL,
     RECONNECT_DELAY_MAX,
     SSTPC_BIN,
+    XRAY_BIN,
     GroupCredentials,
     VPNServer,
 )
 from bifrost.direct import (
     apply_direct_routes,
     capture_default_gateway,
+    get_original_gateway,
     load_direct_list,
     remove_direct_routes,
 )
@@ -113,7 +118,7 @@ def full_cleanup(servers: list[VPNServer] | None = None) -> None:
     # Kill any client processes we could have spawned. sstpc-spawned pppd
     # shows up with argv[0]=/dev/ttysNNN (so `killall pppd` misses it); match
     # on the /tmp/sstp-pppd.<rand> option file via pkill instead.
-    for name in ("openvpn", "sstpc"):
+    for name in ("openvpn", "sstpc", "xray"):
         subprocess.run(["sudo", "killall", name], capture_output=True, timeout=5)
     subprocess.run(
         ["sudo", "pkill", "-f", "sstp-pppd\\."],
@@ -136,6 +141,8 @@ def full_cleanup(servers: list[VPNServer] | None = None) -> None:
         for s in servers:
             if s.protocol == PROTO_SSTP:
                 _unpin_host_route(s.remote)
+            elif s.protocol == PROTO_V2RAY:
+                _teardown_v2ray_routing(s)
 
     # Restore DNS last (it depends on /tmp backup files that survive crashes).
     try:
@@ -224,15 +231,261 @@ printf '%s' "$SERVICE"
 
 def connect_to_server(
     server: VPNServer,
-    credentials: GroupCredentials,
+    credentials: GroupCredentials | None,
     auth_file: Path | None,
     askpass_file: Path | None,
     stop_event: Event,
 ) -> tuple[subprocess.Popen, str | None] | tuple[None, None]:
     """Dispatch to the appropriate client based on the server's protocol."""
+    if server.protocol == PROTO_V2RAY:
+        return _connect_v2ray(server, stop_event)
     if server.protocol == PROTO_SSTP:
+        if credentials is None:
+            log_err("Missing cred.json for SSTP group")
+            return None, None
         return _connect_sstp(server, credentials, stop_event)
     return _connect_openvpn(server, auth_file, askpass_file, stop_event)
+
+
+def _list_utun_ifaces() -> set[str]:
+    try:
+        out = subprocess.check_output(
+            ["ifconfig", "-l"], text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return set()
+    return {i for i in out.split() if i.startswith("utun")}
+
+
+def _setup_v2ray_routing(server: VPNServer, tun_iface: str) -> None:
+    """Steer all traffic through the xray tun, except for xray's own uplink.
+
+    xray's `autoRoute: true` is unreliable on macOS — the tun interface comes
+    up but the kernel keeps sending packets out the physical NIC, so the user
+    sees 0 B/s. Replicate what OpenVPN's `redirect-gateway def1` does:
+
+      1. Pin the proxy server IP to the *original* default gateway. Otherwise
+         xray's outbound TLS to the VLESS server would be matched by the new
+         tun-default and loop back into its own tun.
+      2. Install two `/1` routes (0.0.0.0/1 and 128.0.0.0/1) via the tun.
+         These cover the entire IPv4 space but are *more specific* than the
+         existing default route, so the kernel prefers them without us
+         having to remove and later restore the original default — which
+         survives untouched and resumes serving traffic the moment our /1s
+         are deleted on shutdown.
+      3. Point system DNS at external resolvers (queries flow via the tun).
+    """
+    gw = get_original_gateway()
+    if not gw:
+        log_warn("V2Ray: original gateway unknown; skipping route install")
+        return
+
+    subprocess.run(
+        ["sudo", "route", "delete", "-host", server.remote],
+        capture_output=True, timeout=5,
+    )
+    subprocess.run(
+        ["sudo", "route", "add", "-host", server.remote, gw],
+        capture_output=True, timeout=5,
+    )
+    for net in ("0.0.0.0/1", "128.0.0.0/1"):
+        subprocess.run(
+            ["sudo", "route", "delete", "-net", net],
+            capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["sudo", "route", "add", "-net", net, "-interface", tun_iface],
+            capture_output=True, timeout=5,
+        )
+    log_debug(f"V2Ray routes installed: {server.remote} via {gw}, default via {tun_iface}")
+    _configure_sstp_dns()
+
+
+def _teardown_v2ray_routing(server: VPNServer) -> None:
+    """Undo what _setup_v2ray_routing did. Idempotent and best-effort."""
+    for net in ("0.0.0.0/1", "128.0.0.0/1"):
+        subprocess.run(
+            ["sudo", "route", "delete", "-net", net],
+            capture_output=True, timeout=5,
+        )
+    subprocess.run(
+        ["sudo", "route", "delete", "-host", server.remote],
+        capture_output=True, timeout=5,
+    )
+
+
+def _next_free_utun(existing: set[str]) -> str:
+    """Pick the lowest utunN name not currently in use.
+
+    xray's tun inbound requires `settings.name` to be `utunN` (literal `utun`
+    + integer); it does not auto-allocate. Skipping `utun0..utun3` avoids the
+    range macOS reserves for system services (Back to My Mac, FaceTime, etc.).
+    """
+    used = set()
+    for name in existing:
+        m = re.match(r"utun(\d+)$", name)
+        if m:
+            used.add(int(m.group(1)))
+    n = 4
+    while n in used:
+        n += 1
+    return f"utun{n}"
+
+
+def _connect_v2ray(
+    server: VPNServer,
+    stop_event: Event,
+) -> tuple[subprocess.Popen, str | None] | tuple[None, None]:
+    """Start xray for a VLESS server and return (proc, tun_iface)."""
+    log_info(f"Connecting to {server.name} ({server.remote}:{server.port}) via V2Ray...")
+    if not server.vless_id:
+        log_err("Invalid VLESS config: missing UUID")
+        return None, None
+
+    xray_bin = XRAY_BIN
+    if not Path(xray_bin).exists():
+        detected = shutil.which("xray")
+        if detected:
+            xray_bin = detected
+        else:
+            for candidate in ("/opt/homebrew/bin/xray", "/usr/local/bin/xray"):
+                if Path(candidate).exists():
+                    xray_bin = candidate
+                    break
+            else:
+                log_err(
+                    "xray binary not found. Install it (e.g. `brew install xray`) "
+                    "or set XRAY_BIN in bifrost.config."
+                )
+                return None, None
+
+    pre_utun = _list_utun_ifaces()
+    tun_name = _next_free_utun(pre_utun)
+    cfg = {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {
+                "tag": "tun-in",
+                "protocol": "tun",
+                "settings": {
+                    "name": tun_name,
+                    "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+                    "mtu": 1400,
+                    "autoRoute": True,
+                    "strictRoute": False,
+                },
+            }
+        ],
+        "outbounds": [
+            {
+                "protocol": "vless",
+                "tag": "proxy",
+                "settings": {
+                    "vnext": [
+                        {
+                            "address": server.remote,
+                            "port": server.port,
+                            "users": [
+                                {
+                                    "id": server.vless_id,
+                                    "encryption": "none",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "streamSettings": {
+                    "network": server.vless_network or "tcp",
+                    "security": "tls" if server.vless_tls else "none",
+                },
+            },
+            {"protocol": "freedom", "tag": "direct"},
+        ],
+        "routing": {"domainStrategy": "AsIs", "rules": []},
+    }
+    if server.vless_network == "ws":
+        cfg["outbounds"][0]["streamSettings"]["wsSettings"] = {
+            "path": server.vless_path or "/",
+            "headers": {"Host": server.vless_host or server.remote},
+        }
+    if server.vless_tls:
+        cfg["outbounds"][0]["streamSettings"]["tlsSettings"] = {
+            "serverName": server.vless_sni or server.remote,
+            "allowInsecure": server.vless_allow_insecure,
+        }
+
+    config_file = _create_temp_file(json.dumps(cfg), "xray")
+    # `-format json` is required because _create_temp_file uses a .txt suffix;
+    # xray infers the config format from the file extension and otherwise
+    # refuses to load it ("Failed to get format of ...").
+    cmd = ["sudo", xray_bin, "run", "-format", "json", "-c", str(config_file)]
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+    except OSError as e:
+        log_err(f"Failed to start xray: {e}")
+        try:
+            config_file.unlink()
+        except OSError:
+            pass
+        return None, None
+
+    # Drain xray output via a background thread so we never block on readline
+    # while the process is dying. Without this, the loop reads xray's banner,
+    # sees proc.poll() != None on the next iteration, and breaks before the
+    # actual error line ("Failed to start: ...") arrives — making startup
+    # failures completely silent.
+    line_queue: Queue = Queue()
+    reader = Thread(target=_stdout_reader, args=(proc, line_queue), daemon=True)
+    reader.start()
+
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    captured: list[str] = []
+    tun_up = False
+    proc_exited = False
+    while time.monotonic() < deadline and not stop_event.is_set():
+        try:
+            line = line_queue.get(timeout=0.2)
+        except Empty:
+            line = ""
+        if line is None:
+            proc_exited = True
+        elif line:
+            captured.append(line)
+            log_debug(f"[{server.name}] {line}")
+
+        if not tun_up and tun_name in _list_utun_ifaces():
+            tun_up = True
+
+        if tun_up and proc.poll() is None:
+            _setup_v2ray_routing(server, tun_name)
+            log_ok(f"{GREEN}✓{RESET} Connected to {server.name} on {tun_name}")
+            return proc, tun_name
+
+        if proc_exited or proc.poll() is not None:
+            # Drain any remaining output before reporting.
+            while True:
+                try:
+                    extra = line_queue.get(timeout=0.1)
+                except Empty:
+                    break
+                if extra is None:
+                    break
+                captured.append(extra)
+                log_debug(f"[{server.name}] {extra}")
+            break
+
+    if proc.poll() is None:
+        _kill_proc(proc)
+    if captured:
+        tail = " | ".join(captured[-4:])
+        log_warn(f"[{server.name}] xray output: {tail}")
+    try:
+        config_file.unlink()
+    except OSError:
+        pass
+    return None, None
 
 
 def _connect_openvpn(
@@ -742,18 +995,19 @@ def _clear_status_line():
 
 def run_vpn_loop(
     servers: list[VPNServer],
-    credentials: GroupCredentials,
+    credentials: GroupCredentials | None,
     stop_event: Event,
     probe: bool = True,
 ):
     auth_file: Path | None = None
     askpass_file: Path | None = None
-    if credentials.username:
-        auth_file = _create_temp_file(
-            f"{credentials.username}\n{credentials.password}\n", "auth",
-        )
-    askpass_value = credentials.secret if credentials.secret else credentials.password
-    askpass_file = _create_temp_file(askpass_value + "\n", "askpass")
+    if credentials is not None:
+        if credentials.username:
+            auth_file = _create_temp_file(
+                f"{credentials.username}\n{credentials.password}\n", "auth",
+            )
+        askpass_value = credentials.secret if credentials.secret else credentials.password
+        askpass_file = _create_temp_file(askpass_value + "\n", "askpass")
     retry_count = 0
     cooldown: dict[str, float] = {}
 
@@ -765,13 +1019,16 @@ def run_vpn_loop(
         log_warn("Startup DNS cleanup timed out waiting for sudo; continuing.")
     remove_direct_routes()
 
-    # Load direct-list (domains + CIDRs) and capture the default gateway before VPN
+    # Load direct-list (domains + CIDRs) and capture the default gateway before VPN.
+    # V2Ray needs the gateway even with no direct list — it pins the proxy server
+    # IP to the original gateway so xray's outbound TLS doesn't loop through its
+    # own tun. Capturing unconditionally is also harmless when no VPN protocol
+    # would have used it.
     direct_domains, direct_cidrs = load_direct_list()
     has_direct = bool(direct_domains or direct_cidrs)
-    if has_direct:
-        capture_default_gateway()
-        if direct_domains:
-            log_info(f"Direct domains: {', '.join('.' + d for d in direct_domains)}")
+    capture_default_gateway()
+    if direct_domains:
+        log_info(f"Direct domains: {', '.join('.' + d for d in direct_domains)}")
 
     # Load block.conf up front; routes are installed per-connection (fresh DNS)
     blocked = load_blocklist()
@@ -893,6 +1150,8 @@ def run_vpn_loop(
                     if server.protocol == PROTO_SSTP:
                         _unpin_host_route(server.remote)
                         _kill_sstp_orphans()
+                    elif server.protocol == PROTO_V2RAY:
+                        _teardown_v2ray_routing(server)
 
                 if session_rx > 0 or session_tx > 0:
                     record_traffic(server.group, server.name, session_rx, session_tx)
@@ -948,6 +1207,14 @@ def run_vpn_loop(
             ),
         )
         _run_shutdown_step(
+            "killall xray",
+            lambda: subprocess.run(
+                ["sudo", "killall", "xray"],
+                capture_output=True,
+                timeout=_FAST_EXIT_CMD_TIMEOUT,
+            ),
+        )
+        _run_shutdown_step(
             "killall pppd",
             lambda: subprocess.run(
                 ["sudo", "killall", "pppd"],
@@ -963,6 +1230,14 @@ def run_vpn_loop(
                 _unpin_host_route(s.remote)
                 for s in servers
                 if s.protocol == PROTO_SSTP
+            ],
+        )
+        _run_shutdown_step(
+            "remove v2ray routes",
+            lambda: [
+                _teardown_v2ray_routing(s)
+                for s in servers
+                if s.protocol == PROTO_V2RAY
             ],
         )
         _run_shutdown_step(

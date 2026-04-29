@@ -35,7 +35,10 @@ def _resolve_group(args) -> Group:
     config_dir = Path(args.config_dir).expanduser() if args.config_dir else CONFIGS_DIR
     groups = load_groups(config_dir)
     if not groups:
-        log_err(f"No groups found in {config_dir} (expect subdirs with cred.json + *.ovpn)")
+        log_err(
+            f"No groups found in {config_dir} "
+            "(expect subdirs with configs like *.ovpn/*.sstp/*.vless)"
+        )
         sys.exit(1)
     name = args.group
     if not name:
@@ -224,7 +227,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="bifrost",
-        description="Auto-connecting OpenVPN manager - finds the best server and keeps you connected.",
+        description="Auto-connecting VPN manager (OpenVPN/SSTP/V2Ray) with auto-reconnect.",
     )
     sub = parser.add_subparsers(dest="command")
 

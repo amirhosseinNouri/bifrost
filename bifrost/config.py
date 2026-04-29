@@ -2,6 +2,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     import tomllib
@@ -25,12 +26,14 @@ DEFAULT_EXTERNAL_DNS = ["8.8.8.8", "1.1.1.1"]
 
 OPENVPN_BIN = "/usr/local/opt/openvpn/sbin/openvpn"
 SSTPC_BIN = "/usr/local/sbin/sstpc"
+XRAY_BIN = "/usr/local/bin/xray"
 
 # Default SSTP port (SSTP tunnels over HTTPS)
 DEFAULT_SSTP_PORT = 443
 
 PROTO_OPENVPN = "openvpn"
 PROTO_SSTP = "sstp"
+PROTO_V2RAY = "v2ray"
 
 CRED_FILENAME = "cred.json"
 
@@ -83,6 +86,13 @@ class VPNServer:
     proto: str
     group: str
     protocol: str = PROTO_OPENVPN  # openvpn | sstp — dictates the client binary
+    vless_id: str | None = None
+    vless_host: str | None = None
+    vless_sni: str | None = None
+    vless_path: str | None = None
+    vless_tls: bool = False
+    vless_allow_insecure: bool = False
+    vless_network: str = "tcp"
     latency_ms: float | None = None
 
     def __str__(self):
@@ -94,7 +104,7 @@ class VPNServer:
 class Group:
     name: str
     directory: Path
-    credentials: GroupCredentials
+    credentials: GroupCredentials | None
     servers: list[VPNServer] = field(default_factory=list)
 
 
@@ -226,6 +236,53 @@ def parse_sstp(path: Path, group: str) -> VPNServer | None:
     )
 
 
+def parse_vless(path: Path, group: str) -> VPNServer | None:
+    """Parse a .vless file containing a single vless:// URI."""
+    try:
+        raw = path.read_text().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+
+    uri = unquote(raw)
+    try:
+        p = urlparse(uri)
+    except ValueError:
+        return None
+    if p.scheme.lower() != "vless":
+        return None
+    if not p.hostname or not p.username:
+        return None
+    if p.port is None:
+        return None
+
+    q = parse_qs(p.query)
+    host = (q.get("host") or [None])[0]
+    sni = (q.get("sni") or [None])[0]
+    network = ((q.get("type") or ["tcp"])[0] or "tcp").lower()
+    path_q = (q.get("path") or ["/"])[0] or "/"
+    security = ((q.get("security") or [""])[0] or "").lower()
+    allow_insecure = ((q.get("allowInsecure") or q.get("insecure") or ["0"])[0] or "0").lower() in ("1", "true", "yes")
+
+    return VPNServer(
+        config_path=path,
+        name=path.stem,
+        remote=p.hostname,
+        port=p.port,
+        proto="tcp",
+        group=group,
+        protocol=PROTO_V2RAY,
+        vless_id=p.username,
+        vless_host=host,
+        vless_sni=sni or p.hostname,
+        vless_path=path_q,
+        vless_tls=(security == "tls"),
+        vless_allow_insecure=allow_insecure,
+        vless_network=network,
+    )
+
+
 def _load_credentials(group_dir: Path) -> GroupCredentials | None:
     cred_file = group_dir / CRED_FILENAME
     if not cred_file.is_file():
@@ -245,11 +302,8 @@ def _load_credentials(group_dir: Path) -> GroupCredentials | None:
 
 
 def load_group(group_dir: Path) -> Group | None:
-    """Load a single group directory: cred.json + *.ovpn files."""
+    """Load a single group directory."""
     if not group_dir.is_dir():
-        return None
-    creds = _load_credentials(group_dir)
-    if creds is None:
         return None
     servers: list[VPNServer] = []
     for f in sorted(group_dir.glob("*.ovpn")):
@@ -260,7 +314,15 @@ def load_group(group_dir: Path) -> Group | None:
         server = parse_sstp(f, group=group_dir.name)
         if server:
             servers.append(server)
+    for f in sorted(group_dir.glob("*.vless")):
+        server = parse_vless(f, group=group_dir.name)
+        if server:
+            servers.append(server)
     if not servers:
+        return None
+    creds = _load_credentials(group_dir)
+    needs_creds = any(s.protocol in (PROTO_OPENVPN, PROTO_SSTP) for s in servers)
+    if needs_creds and creds is None:
         return None
     return Group(name=group_dir.name, directory=group_dir, credentials=creds, servers=servers)
 

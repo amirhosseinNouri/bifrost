@@ -65,6 +65,7 @@ require_cmd python3 "Python 3 is required. Install Python 3.10+ first."
 
 install_formula_if_missing "openvpn" "openvpn"
 install_formula_if_missing "sstp-client" "sstpc"
+install_formula_if_missing "xray" "xray"
 install_python_reqs
 install_bifrost_editable
 

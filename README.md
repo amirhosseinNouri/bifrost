@@ -1,11 +1,11 @@
 # bifrost
-Standalone VPN CLI for OpenVPN/SSTP with configurable DNS and split routing.
+Standalone VPN CLI for OpenVPN/SSTP/V2Ray (VLESS) with configurable DNS and split routing.
 
 ## Features
-- OpenVPN and SSTP support in one CLI.
+- OpenVPN, SSTP, and V2Ray (VLESS URI) support in one CLI.
 - Automatic server probing and best-server selection.
 - Auto-reconnect loop with reliability-aware ranking.
-- Group-based config loading (`cred.json` + `*.ovpn`/`*.sstp`).
+- Group-based config loading (`*.ovpn`/`*.sstp`/`*.vless` + optional `cred.json`).
 - Configurable internal/external DNS profiles via `~/.bifrost/config.toml`.
 - DNS switching command: `bifrost dns --internal|--external`.
 - Direct-route list support (`direct.conf`) for domain/CIDR VPN bypass.
@@ -32,7 +32,7 @@ From the project root:
 ```
 
 Notes:
-- Installs required system tools (`openvpn`, `sstp-client`) and Python dependencies.
+- Installs required system tools (`openvpn`, `sstp-client`, `xray`) and Python dependencies.
 - Uses mirror `https://mirror-pypi.runflare.com/simple` by default.
 - Override mirror: `PIP_INDEX_URL=<url> ./bootstrap.sh`
 - Skips already-installed tools automatically.
@@ -41,9 +41,9 @@ Notes:
 ## Groups and config layout
 A **group** is a provider/account/profile folder under `~/.bifrost/configs`.
 
-Each group contains:
-- one `cred.json` (shared credentials for that group)
-- one or more VPN config files
+Each group contains one or more VPN config files and optionally `cred.json`.
+
+`cred.json` is required for OpenVPN/SSTP entries and optional for VLESS-only groups.
 
 You can put **multiple configs in one group** (for example several servers/regions).
 Bifrost will probe/select among them when you run that group.
@@ -51,6 +51,7 @@ Bifrost will probe/select among them when you run that group.
 Protocol mapping:
 - `*.ovpn` files are treated as **OpenVPN** configs.
 - `*.sstp` files are treated as **SSTP** configs.
+- `*.vless` files are treated as **V2Ray VLESS URI** configs (one URI per file).
 
 Example tree:
 ```text
@@ -64,6 +65,8 @@ Example tree:
 │   │   ├── us1.ovpn
 │   │   ├── us2.ovpn
 │   │   └── eu1.sstp
+│   └── work2/
+│       └── node1.vless
 │   └── personal/
 │       ├── cred.json
 │       ├── fast1.ovpn
@@ -83,7 +86,7 @@ Example tree:
 ```
 
 ## Usage
-OpenVPN/SSTP group commands:
+VPN group commands:
 ```bash
 sudo bifrost probe --group work
 sudo bifrost run --group work
